@@ -1,0 +1,109 @@
+import discord
+from discord.ext import commands
+import requests
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+# Your actual API key from The Odds API
+API_KEY = os.getenv("LIVE_ODDS_KEY")
+
+# API URL and other configuration parameters
+SPORT = 'upcoming'  # 'upcoming' to get the next 8 games across all sports
+REGIONS = 'us'  # You can use 'uk', 'us', 'eu', or 'au'
+MARKETS = 'h2h,spreads'  # Example: head-to-head and spreads markets
+ODDS_FORMAT = 'decimal'  # Decimal format for odds
+DATE_FORMAT = 'iso'  # ISO date format
+
+# Set up intents for your Discord bot
+intents = discord.Intents.default()
+intents.message_content = True  # Enable message content intent
+
+# Initialize the bot with the command prefix and intents
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Fetch live sports odds from the API
+def get_live_odds():
+    headers = {'X-API-KEY': API_KEY}
+    response = requests.get(
+        f'https://api.the-odds-api.com/v4/sports/upcoming/odds/?regions=us&markets=h2h&oddsFormat=american&apiKey=89cffdca189608777591aa1afac88ac6',
+        params={
+            'api_key': API_KEY,
+            'regions': REGIONS,
+            'markets': MARKETS,
+            'oddsFormat': ODDS_FORMAT,
+            'dateFormat': DATE_FORMAT,
+        }
+    )
+
+    # Check if the response is valid
+    if response.status_code != 200:
+        return f"Error: Unable to fetch data from API. Status Code: {response.status_code}. Message: {response.text}"
+
+    data = response.json()
+
+    if not data:
+        return "No odds data available."
+
+    odds_info = []
+    
+    # Loop through each game in the response data
+    for game in data:
+        sport_title = game['sport_title']
+        home_team = game['home_team']
+        away_team = game['away_team']
+        commence_time = game['commence_time']
+
+        # Corrected f-string here
+        odds_text = f"**{sport_title}:** {home_team} vs {away_team}\n"
+        odds_text += f"  **Start Time:** {commence_time}\n"
+
+        # Loop through each bookmaker for this game
+        if 'bookmakers' in game:
+            for bookmaker in game['bookmakers']:
+                bookmaker_name = bookmaker['title']
+                odds_text += f"\n  **{bookmaker_name}:**\n"
+                
+                # Loop through each market (usually 'h2h' for head-to-head)
+                for market in bookmaker['markets']:
+                    if market['key'] == 'h2h':  # Head-to-head market
+                        odds_text += f"    Head-to-Head: \n"
+                        for outcome in market['outcomes']:
+                            odds_text += f"    {outcome['name']}: {outcome['price']} \n"
+
+        odds_info.append(odds_text)
+
+    # Join all the odds info into a single string
+    full_odds = "\n".join(odds_info)
+    return full_odds
+
+
+# Helper function to split large messages
+async def send_large_message(ctx, message):
+    # Split the message if it's larger than Discord's 1999 character limit
+    while len(message) > 1999:
+        await ctx.send(message[:1999])  # Send the first 1999 characters
+        message = message[1999:]  # Remove the sent part from the message
+
+    # Send the remaining part (if any)
+    await ctx.send(message)
+
+
+# Event when the bot is ready and connected to Discord
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')  # Confirm the bot is connected
+
+# Command to fetch and display live odds
+@bot.command()
+async def odds(ctx):
+    """Fetch and display live sports odds"""
+    odds_data = get_live_odds()  # Call the function here
+
+    # Send the message in chunks if it's too long
+    await send_large_message(ctx, f"**Live Sports Odds:**\n{odds_data}")
+
+# Run the bot with your Discord bot token
+bot.run(os.getenv("DISCORD_KEY"))  # Replace with your actual Discord bot token
