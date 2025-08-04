@@ -1,16 +1,16 @@
 import discord
 from discord.ext import commands
 import requests
+import os
+from dotenv import load_dotenv
+from collections import defaultdict
+
+# Load environment variables
+load_dotenv()  # Load environment variables from .env file
 
 # Your actual API key from The Odds API
-API_KEY = '89cffdca189608777591aa1afac88ac6'
-
-# API URL and other configuration parameters
-SPORT = 'upcoming'  # 'upcoming' to get the next 8 games across all sports
-REGIONS = 'us'  # You can use 'uk', 'us', 'eu', or 'au'
-MARKETS = 'h2h,spreads'  # Example: head-to-head and spreads markets
-ODDS_FORMAT = 'decimal'  # Decimal format for odds
-DATE_FORMAT = 'iso'  # ISO date format
+API_KEY = os.getenv("LIVE_ODDS_KEY")
+BOT_TOKEN = os.getenv("DISCORD_KEY")
 
 # Set up intents for your Discord bot
 intents = discord.Intents.default()
@@ -19,86 +19,222 @@ intents.message_content = True  # Enable message content intent
 # Initialize the bot with the command prefix and intents
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Fetch live sports odds from the API
-def get_live_odds():
-    headers = {'X-API-KEY': API_KEY}
-    response = requests.get(
-        f'https://api.the-odds-api.com/v4/sports/upcoming/odds/?regions=us&markets=h2h&oddsFormat=american&apiKey=89cffdca189608777591aa1afac88ac6',
-        params={
-            'api_key': API_KEY,
-            'regions': REGIONS,
-            'markets': MARKETS,
-            'oddsFormat': ODDS_FORMAT,
-            'dateFormat': DATE_FORMAT,
-        }
-    )
+# API URL and other configuration parameters
+SPORT = 'upcoming'  # 'upcoming' to get the next 8 games across all sports
+REGIONS = 'us'  # You can use 'uk', 'us', 'eu', or 'au'
+MARKETS = 'h2h,spreads'  # Example: head-to-head and spreads markets
+ODDS_FORMAT = 'decimal'  # Decimal format for odds
+DATE_FORMAT = 'iso'  # ISO date format
 
-    # Check if the response is valid
+# NBA Player Props (separate from MLB props)
+NBA_PLAYER_PROPS = [
+    "player_points", "player_points_q1", "player_rebounds", "player_rebounds_q1", "player_assists",
+    "player_assists_q1", "player_threes", "player_blocks", "player_steals", "player_blocks_steals",
+    "player_turnovers", "player_points_rebounds_assists", "player_points_rebounds", "player_points_assists",
+    "player_rebounds_assists", "player_field_goals", "player_frees_made", "player_frees_attempts",
+    "player_first_basket", "player_first_team_basket", "player_double_double", "player_triple_double",
+    "player_method_of_first_basket", "player_points_alternate", "player_rebounds_alternate",
+    "player_assists_alternate", "player_blocks_alternate", "player_steals_alternate", "player_turnovers_alternate",
+    "player_threes_alternate", "player_points_assists_alternate", "player_points_rebounds_alternate",
+    "player_rebounds_assists_alternate", "player_points_rebounds_assists_alternate"
+]
+
+# MLB Player Props
+MLB_PLAYER_PROPS = [
+    "batter_home_runs", "batter_first_home_run", "batter_hits", "batter_total_bases",
+    "batter_rbis", "batter_runs_scored", "batter_hits_runs_rbis", "batter_singles", 
+    "batter_doubles", "batter_triples", "batter_walks", "batter_strikeouts", 
+    "batter_stolen_bases", "pitcher_strikeouts", "pitcher_record_a_win", "pitcher_hits_allowed",
+    "pitcher_walks", "pitcher_earned_runs", "pitcher_outs", "batter_total_bases_alternate", 
+    "batter_home_runs_alternate", "batter_hits_alternate", "batter_rbis_alternate", 
+    "batter_walks_alternate", "batter_runs_scored_alternate", "batter_singles_alternate", 
+    "batter_doubles_alternate", "batter_triples_alternate", "pitcher_hits_allowed_alternate", 
+    "pitcher_walks_alternate", "pitcher_strikeouts_alternate"
+]
+
+# Fetch sports data
+def get_sports():
+    url = f'https://api.the-odds-api.com/v4/sports'
+    response = requests.get(url, params={'api_key': API_KEY})
+
+    if response.status_code != 200:
+        return None  # Return None if the API request fails
+
+    data = response.json()
+    if not data:
+        return None  # Return None if no sports data is found
+
+    sports_dict = {}
+    for sport in data:
+        sports_dict[sport['key']] = sport['title']  # Store sport key and title
+
+    return sports_dict
+
+# Fetch live sports odds based on sport and sportsbook
+def get_live_odds(sport, sportsbook):
+    url = f'https://api.the-odds-api.com/v4/sports/{sport}/odds/?regions={REGIONS}&markets={MARKETS}&oddsFormat={ODDS_FORMAT}&dateFormat={DATE_FORMAT}'
+    response = requests.get(url, params={'api_key': API_KEY})
+
     if response.status_code != 200:
         return f"Error: Unable to fetch data from API. Status Code: {response.status_code}. Message: {response.text}"
 
     data = response.json()
-
     if not data:
         return "No odds data available."
 
     odds_info = []
-    
-    # Loop through each game in the response data
     for game in data:
         sport_title = game['sport_title']
         home_team = game['home_team']
         away_team = game['away_team']
         commence_time = game['commence_time']
 
-        # Corrected f-string here
-        odds_text = f"**{sport_title}:** {home_team} vs {away_team}\n"
-        odds_text += f"  **Start Time:** {commence_time}\n"
-
-        # Loop through each bookmaker for this game
         if 'bookmakers' in game:
             for bookmaker in game['bookmakers']:
-                bookmaker_name = bookmaker['title']
-                odds_text += f"\n  **{bookmaker_name}:**\n"
-                
-                # Loop through each market (usually 'h2h' for head-to-head)
-                for market in bookmaker['markets']:
-                    if market['key'] == 'h2h':  # Head-to-head market
-                        odds_text += f"    Head-to-Head: \n"
-                        for outcome in market['outcomes']:
-                            odds_text += f"    {outcome['name']}: {outcome['price']} \n"
+                if bookmaker['title'].lower() == sportsbook.lower():
+                    odds_text = f"**{sport_title}:** {home_team} vs {away_team}\n"
+                    odds_text += f"  **Start Time:** {commence_time}\n"
+                    odds_text += f"\n  **{bookmaker['title']}:**\n"
+                    for market in bookmaker['markets']:
+                        if market['key'] == 'h2h':  # Head-to-head market
+                            odds_text += f"    Head-to-Head: \n"
+                            for outcome in market['outcomes']:
+                                odds_text += f"    {outcome['name']}: {outcome['price']} \n"
+                    odds_info.append(odds_text)
 
-        odds_info.append(odds_text)
-
-    # Join all the odds info into a single string
-    full_odds = "\n".join(odds_info)
-    return full_odds
-
+    if odds_info:
+        return "\n".join(odds_info)
+    else:
+        return f"No odds available for {sport} from {sportsbook}."
 
 # Helper function to split large messages
-async def send_large_message(ctx, message):
-    # Split the message if it's larger than Discord's 1999 character limit
+async def send_large_message(interaction, message):
     while len(message) > 1999:
-        await ctx.send(message[:1999])  # Send the first 1999 characters
+        await interaction.response.send_message(message[:1999])  # Send the first 1999 characters
         message = message[1999:]  # Remove the sent part from the message
 
-    # Send the remaining part (if any)
-    await ctx.send(message)
+    await interaction.response.send_message(message)
 
+# Fetch past games for a specific team
+def get_past_games(sport, team):
+    url = f'https://api.the-odds-api.com/v4/sports/{sport}/odds-history/?apiKey={API_KEY}&team={team}'
+    response = requests.get(url)
+    if response.status_code != 200:
+        return f"Error: Unable to fetch data. Status Code: {response.status_code}"
+    return response.json()
+
+# Track streaks for a team
+def track_streaks(games, team):
+    streaks = {'wins': 0, 'losses': 0}
+    current_streak = 0
+    previous_result = None
+
+    for game in games:
+        if game['home_team'] == team or game['away_team'] == team:
+            outcome = 'win' if game['home_team'] == team and game['home_score'] > game['away_score'] else 'loss'
+            if outcome == previous_result:
+                current_streak += 1
+            else:
+                if previous_result is not None:
+                    streaks[previous_result] = max(streaks[previous_result], current_streak)
+                current_streak = 1
+                previous_result = outcome
+
+    if previous_result is not None:
+        streaks[previous_result] = max(streaks[previous_result], current_streak)
+
+    return streaks
 
 # Event when the bot is ready and connected to Discord
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')  # Confirm the bot is connected
+    await bot.tree.sync()  # Sync the commands with Discord API
 
-# Command to fetch and display live odds
-@bot.command()
-async def odds(ctx):
-    """Fetch and display live sports odds"""
-    odds_data = get_live_odds()  # Call the function here
+# Command to fetch and display live odds (slash command)
+@bot.tree.command(name="odds", description="Fetch and display live sports odds from a specific sportsbook")
+async def odds(interaction: discord.Interaction, sport: str, sportsbook: str):
+    """Fetch and display live sports odds based on sport and sportsbook"""
+    
+    sports = get_sports()
+    if sports is None:
+        await interaction.response.send_message("Error: Unable to fetch sports list.")
+        return
 
-    # Send the message in chunks if it's too long
-    await send_large_message(ctx, f"**Live Sports Odds:**\n{odds_data}")
+    if sport not in sports:
+        await interaction.response.send_message(f"Error: Invalid sport. Available sports are: {', '.join(sports.keys())}")
+        return
+
+    odds_data = get_live_odds(sport, sportsbook)
+    await send_large_message(interaction, f"**Live Sports Odds for {sport} from {sportsbook}:**\n{odds_data}")
+
+# Command to fetch and display streaks (slash command)
+@bot.tree.command(name="streaks", description="Fetch and display streaks for a specific team in a sport")
+async def streaks(interaction: discord.Interaction, sport: str, team: str):
+    """Fetch and display streaks for a team in a given sport.""" 
+    
+    sports = get_sports()
+    if sports is None:
+        await interaction.response.send_message("Error: Unable to fetch sports list.")
+        return
+
+    if sport not in sports:
+        await interaction.response.send_message(f"Error: Invalid sport. Available sports are: {', '.join(sports.keys())}")
+        return
+
+    games = get_past_games(sport, team)
+    if isinstance(games, str):  # Error message
+        await interaction.response.send_message(games)
+        return
+
+    streaks = track_streaks(games, team)
+    
+    streak_message = f"**{team} Streaks in {sport}:**\n"
+    streak_message += f"  Wins: {streaks['wins']} in a row\n"
+    streak_message += f"  Losses: {streaks['losses']} in a row\n"
+    
+    await send_large_message(interaction, streak_message)
+
+# Command to fetch player props (slash command)
+@bot.tree.command(name="playerprops", description="Fetch player props for a specific player in a sport")
+async def playerprops(interaction: discord.Interaction, sport: str, player: str, prop: str):
+    """Fetch and display NBA or MLB player props for a given player.""" 
+    
+    sports = get_sports()
+    if sports is None:
+        await interaction.response.send_message("Error: Unable to fetch sports list.")
+        return
+
+    if sport not in sports:
+        await interaction.response.send_message(f"Error: Invalid sport. Available sports are: {', '.join(sports.keys())}")
+        return
+    
+    # Validate the player props
+    if sport == "nba" and prop not in NBA_PLAYER_PROPS:
+        await interaction.response.send_message(f"Error: Invalid NBA player prop. Available props are: {', '.join(NBA_PLAYER_PROPS)}")
+        return
+    elif sport == "mlb" and prop not in MLB_PLAYER_PROPS:
+        await interaction.response.send_message(f"Error: Invalid MLB player prop. Available props are: {', '.join(MLB_PLAYER_PROPS)}")
+        return
+    
+    # Fetch the player prop data
+    url = f'https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={API_KEY}&player={player}&prop={prop}'
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        await interaction.response.send_message(f"Error: Unable to fetch player props. Status Code: {response.status_code}")
+        return
+
+    data = response.json()
+    if not data:
+        await interaction.response.send_message(f"No data found for {player} in {sport} with prop {prop}.")
+        return
+    
+    props_info = []
+    for item in data:
+        props_info.append(f"{player} - {prop}: {item.get('price')}")
+
+    await send_large_message(interaction, "\n".join(props_info))
 
 # Run the bot with your Discord bot token
-bot.run('MTQwMTM1MTQ5MDQ1ODg3ODAxNQ.Gl7Wec.syNhfyAUE3hNVjHd3tZeBgCJlTMYEQcQxCTNFA')  # Replace with your actual Discord bot token
+bot.run(os.getenv("DISCORD_KEY"))
